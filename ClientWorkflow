@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Client Workflow Tracker</title>
+    <!-- Load Tailwind CSS from CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel for JSX (Needed to process the JS code block below) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Lucide Icons (Standard Version) -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f8fafc;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans selection:bg-indigo-100">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // --- ICON COMPONENT HELPER ---
+        const Icon = ({ name, className }) => {
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            }, [name]);
+            return <i data-lucide={name} className={className}></i>;
+        };
+
+        // Get icons from global scope after loading (required for Babel/Standalone)
+        const { 
+            RefreshCw, Search, User, CheckCircle, Lock, AlertTriangle, Loader2, LogOut, 
+            ArrowUpDown, ArrowUp, ArrowDown, ClipboardCheck, CalendarDays, Clock, Link: LinkIcon 
+        } = window.lucide || {}; 
+
+
+        function App() {
+            // --- CONFIGURATION ---
+            const bgImage = "https://images.unsplash.com/photo-1614850523459-c2f4c699c52e?q=80&w=2070&auto=format&fit=crop";
+            const sheetUrl = 'https://script.google.com/macros/s/AKfycbyr483pZkGLcmFxNu7EucpN4_Zo46qJ055bPWb4WgEX-fqPcLjWQU8gd_jGGVTioZqNyw/exec';
+
+            // --- STATE ---
+            const [workflows, setWorkflows] = useState([]); 
+            const [searchTerm, setSearchTerm] = useState('');
+            const [isLoading, setIsLoading] = useState(false);
+            const [fetchError, setFetchError] = useState(null);
+            const [lastSynced, setLastSynced] = useState(null);
+            const [autoRefresh, setAutoRefresh] = useState(true);
+            
+            // Auth State
+            const [currentUser, setCurrentUser] = useState(null); 
+            const [loginInput, setLoginInput] = useState('');
+            const [loginError, setLoginError] = useState('');
+            const [sortConfig, setSortConfig] = useState({ key: 'orderNo', direction: 'asc' });
+
+            // --- READ DATA ---
+            const fetchSheetData = async (url, silent = false) => {
+                if (!url) return;
+                if (!silent) setIsLoading(true);
+                if (!silent) setFetchError(null);
+                
+                try {
+                    const fetchUrl = `${url}?v=${Date.now()}`;
+                    const response = await fetch(fetchUrl);
+                    const jsonResponse = await response.json();
+                    
+                    let data = [];
+                    if (jsonResponse.status === "success") {
+                        data = jsonResponse.data;
+                    } else if (jsonResponse.data) {
+                        data = jsonResponse.data;
+                    } else if (Array.isArray(jsonResponse)) {
+                        data = jsonResponse; 
+                    } else if (jsonResponse.error) {
+                        throw new Error(jsonResponse.error);
+                    }
+
+                    const normalizedData = data.map(item => {
+                        let dateStr = item.plannedDate;
+                        try {
+                            const d = new Date(item.plannedDate);
+                            if (!isNaN(d.getTime())) {
+                                dateStr = d.toISOString().slice(0, 16);
+                            }
+                        } catch (e) {}
+                        return { ...item, plannedDate: dateStr };
+                    });
+
+                    setWorkflows(normalizedData);
+                    setLastSynced(new Date());
+                    
+                } catch (error) {
+                    console.error("Sync Error:", error);
+                    if (!silent) setFetchError("Connection failed. Check URL.");
+                } finally {
+                    if (!silent) setIsLoading(false);
+                }
+            };
+
+            // Auto-fetch interval
+            useEffect(() => {
+                if (sheetUrl) {
+                    fetchSheetData(sheetUrl); 
+                    if (autoRefresh) {
+                        const interval = setInterval(() => fetchSheetData(sheetUrl, true), 5000); 
+                        return () => clearInterval(interval);
+                    }
+                }
+            }, [sheetUrl, autoRefresh]); 
+
+            // --- HANDLERS ---
+            const handleLogin = (e) => {
+                e.preventDefault();
+                const input = loginInput.trim().toLowerCase();
+                if (!input) { setLoginError('Enter name.'); return; }
+
+                const userExists = workflows.some(w => 
+                    (w.makeupArtist && w.makeupArtist.toLowerCase().trim() === input) || 
+                    (w.hairArtist && w.hairArtist.toLowerCase().trim() === input)
+                );
+
+                if (userExists) {
+                    const originalName = workflows.find(w => 
+                        (w.makeupArtist && w.makeupArtist.toLowerCase().trim() === input) || 
+                        (w.hairArtist && w.hairArtist.toLowerCase().trim() === input)
+                    );
+                    const displayName = originalName.makeupArtist.toLowerCase().trim() === input 
+                        ? originalName.makeupArtist 
+                        : originalName.hairArtist;
+                    setCurrentUser(displayName);
+                    setSearchTerm(''); 
+                    setLoginError('');
+                } else {
+                    setLoginError('Artist not found in active tasks.');
+                }
+            };
+
+            const handleLogout = () => {
+                setCurrentUser(null);
+                setLoginInput('');
+                setSearchTerm('');
+            };
+            
+            const handleSort = (key) => {
+                let direction = 'asc';
+                if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
+                setSortConfig({ key, direction });
+            };
+
+            const processedWorkflows = useMemo(() => {
+                let data = [...workflows];
+                if (currentUser) {
+                    const lowerUser = currentUser.toLowerCase().trim();
+                    data = data.filter(item => 
+                        (item.makeupArtist && item.makeupArtist.toLowerCase().trim() === lowerUser) ||
+                        (item.hairArtist && item.hairArtist.toLowerCase().trim() === lowerUser)
+                    );
+                }
+                if (searchTerm) {
+                    const lowerTerm = searchTerm.toLowerCase();
+                    data = data.filter(item => 
+                        (item.stepName && item.stepName.toLowerCase().includes(lowerTerm)) ||
+                        (item.assigneeName && item.assigneeName.toLowerCase().includes(lowerTerm)) ||
+                        (item.orderNo && item.orderNo.toString().includes(lowerTerm))
+                    );
+                }
+                if (sortConfig.key) {
+                    data.sort((a, b) => {
+                        if (a[sortConfig.key] < b[sortConfig.key]) return sortConfig.direction === 'asc' ? -1 : 1;
+                        if (a[sortConfig.key] > b[sortConfig.key]) return sortConfig.direction === 'asc' ? 1 : -1;
+                        return 0;
+                    });
+                }
+                return data;
+            }, [workflows, searchTerm, sortConfig, currentUser]);
+
+            const getStatus = (dateString) => {
+                if (!dateString) return { label: 'No Date', color: 'bg-gray-100 text-gray-500' };
+                const date = new Date(dateString);
+                const now = new Date();
+                const diffTime = date - now;
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+                if (diffDays < 0) return { label: 'Overdue', color: 'bg-red-100 text-red-700' };
+                if (diffDays <= 7) return { label: 'This Week', color: 'bg-amber-100 text-amber-700' };
+                return { label: 'Upcoming', color: 'bg-emerald-100 text-emerald-700' };
+            };
+
+            // --- RENDER COMPONENTS ---
+            const SortIconComponent = ({ columnKey }) => {
+                if (sortConfig.key !== columnKey) return <Icon name="arrow-up-down" className="w-3 h-3 text-slate-300 ml-1 opacity-0 group-hover:opacity-100" />;
+                return sortConfig.direction === 'asc' 
+                    ? <Icon name="arrow-up" className="w-3 h-3 text-indigo-600 ml-1" /> 
+                    : <Icon name="arrow-down" className="w-3 h-3 text-indigo-600 ml-1" />;
+            };
+
+            const HeaderCell = ({ label, sortKey, width, align = "left" }) => (
+                <th className={`px-6 py-4 text-xs font-bold text-slate-600 uppercase tracking-wider cursor-pointer hover:bg-white/40 transition-colors group select-none ${width} text-${align}`} onClick={() => sortKey && handleSort(sortKey)}>
+                    <div className={`flex items-center ${align === 'right' ? 'justify-end' : 'justify-start'} gap-1`}>
+                        {label} {sortKey && <SortIconComponent columnKey={sortKey} />}
+                    </div>
+                </th>
+            );
+
+            const BackgroundWrapper = ({ children }) => (
+                <div className="min-h-screen font-sans bg-cover bg-center bg-fixed relative selection:bg-indigo-100" style={{ backgroundImage: `url('${bgImage}')` }}>
+                    <div className="absolute inset-0 bg-white/90 backdrop-blur-[2px] z-0"></div>
+                    <div className="relative z-10 min-h-screen flex flex-col">{children}</div>
+                </div>
+            );
+
+            // --- RENDER: LOGIN ---
+            if (!currentUser) {
+                return (
+                    <BackgroundWrapper>
+                        <div className="flex-1 flex items-center justify-center p-4">
+                            <div className="bg-white/95 backdrop-blur-md w-full max-w-md rounded-2xl shadow-2xl overflow-hidden border border-white/50">
+                                <div className="bg-indigo-600 p-8 text-center relative overflow-hidden">
+                                    <div className="relative z-10">
+                                        <div className="bg-white/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm border border-white/30">
+                                            <Icon name="lock" className="w-8 h-8 text-white" />
+                                        </div>
+                                        <h1 className="text-2xl font-bold text-white">Artist Login</h1>
+                                    </div>
+                                </div>
+                                <div className="p-8">
+                                    <form onSubmit={handleLogin}>
+                                        <div className="mb-6">
+                                            <label className="block text-sm font-medium text-slate-700 mb-2">Enter your Makeup/Hair Artist Name</label>
+                                            <div className="relative group">
+                                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><Icon name="user" className="w-5 h-5" /></span>
+                                                <input type="text" className="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all bg-slate-50 focus:bg-white" placeholder="e.g. YHH, 5D" value={loginInput} onChange={(e) => setLoginInput(e.target.value)} autoFocus />
+                                            </div>
+                                        </div>
+                                        {loginError && <div className="mb-6 p-3 bg-red-50 border border-red-100 rounded-lg flex items-start gap-2 text-red-600 text-sm"><Icon name="alert-triangle" className="w-4 h-4 mt-0.5 flex-shrink-0" /> <span>{loginError}</span></div>}
+                                        <button type="submit" disabled={isLoading} className="w-full bg-indigo-600 text-white py-3.5 rounded-xl font-bold text-base hover:bg-indigo-700 active:scale-[0.98] transition-all shadow-lg shadow-indigo-200 flex justify-center items-center gap-2">
+                                            {isLoading ? <Icon name="loader-2" className="w-5 h-5 animate-spin" /> : "Access Workflow"}
+                                        </button>
+                                    </form>
+                                    <div className="mt-6 text-center"><p className="text-xs text-slate-400">{isLoading ? 'Loading database...' : `${workflows.length} active tasks in database`}</p></div>
+                                </div>
+                            </div>
+                        </div>
+                    </BackgroundWrapper>
+                );
+            }
+
+            // --- RENDER: MAIN APP ---
+            return (
+                <BackgroundWrapper>
+                    {/* Top Navigation */}
+                    <nav className="bg-white/80 backdrop-blur-md border-b border-slate-200/60 px-4 md:px-6 py-3 md:py-4 sticky top-0 z-20 shadow-sm">
+                        <div className="max-w-full mx-auto flex flex-col md:flex-row justify-between items-center gap-3">
+                            <div className="flex items-center gap-3 w-full md:w-auto">
+                                <div className="bg-indigo-600 p-2 rounded-lg shadow-md"><Icon name="check-circle" className="w-6 h-6 text-white" /></div>
+                                <div>
+                                    <h1 className="text-lg font-bold text-slate-900">Client Workflow</h1>
+                                    <div className="flex items-center gap-3 text-[11px] text-slate-500 font-medium mt-1">
+                                        <span className="text-emerald-700 flex items-center gap-1 bg-emerald-100/50 px-2 py-0.5 rounded-full border border-emerald-100/50"><Icon name="user" className="w-3 h-3" /> Logged in as: {currentUser}</span>
+                                        {isLoading && !lastSynced && <span className="text-indigo-600 flex items-center gap-1"><Icon name="loader-2" className="w-3 h-3 animate-spin" /> Syncing...</span>}
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3 w-full md:w-auto">
+                                <button onClick={() => fetchSheetData(sheetUrl)} className="flex items-center gap-2 bg-white/80 border border-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium shadow-sm hover:shadow"><Icon name="refresh-cw" className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} /> Refresh</button>
+                                <div className="relative flex-1 md:w-64"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><Icon name="search" className="w-4 h-4" /></span><input type="text" placeholder="Filter..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-slate-100/80 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></div>
+                                <button onClick={handleLogout} className="p-2 text-slate-500 hover:text-red-600 rounded-lg"><Icon name="log-out" className="w-5 h-5" /></button>
+                            </div>
+                        </div>
+                    </nav>
+
+                    {/* Main Content */}
+                    <main className="max-w-full mx-auto px-3 md:px-6 py-4">
+                        {fetchError && <div className="mb-4 bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3 text-red-800"><Icon name="alert-triangle" className="w-5 h-5 mt-0.5 flex-shrink-0" /><div><h3 className="font-bold text-sm">Sync Error</h3><p className="text-sm mt-1">{fetchError}</p></div></div>}
+
+                        {/* Mobile Cards */}
+                        <div className="md:hidden space-y-4">
+                            {processedWorkflows.length === 0 ? (
+                                <div className="text-center py-10 bg-white/80 backdrop-blur-sm rounded-xl shadow-sm border border-slate-100"><Icon name="search" className="w-10 h-10 mb-3 text-slate-300 mx-auto" /><p className="text-gray-500">No tasks found for {currentUser}</p><button onClick={() => setSearchTerm('')} className="text-indigo-600 text-sm font-medium mt-2">Clear Search</button></div>
+                            ) : (
+                                processedWorkflows.map((workflow) => {
+                                    const status = getStatus(workflow.plannedDate);
+                                    return (
+                                        <div key={workflow.id} className="bg-white/90 backdrop-blur-sm p-4 rounded-xl shadow-sm border border-slate-200">
+                                            <div className="flex justify-between items-start mb-3">
+                                                <span className="bg-slate-100 text-slate-600 text-xs font-bold px-2 py-1 rounded-md">#{workflow.orderNo}</span>
+                                                <span className={`text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wide ${status.label === 'Overdue' ? 'bg-red-100 text-red-700' : status.label === 'This Week' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>{status.label}</span>
+                                            </div>
+                                            <div className="mb-3">
+                                                <div className="font-semibold text-slate-800 mb-1">{workflow.stepName}</div>
+                                                <div className="flex items-center gap-2 text-sm text-slate-500"><Icon name="clock" className="w-3.5 h-3.5" /> {new Date(workflow.plannedDate).toLocaleDateString()} at {new Date(workflow.plannedDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-2 text-sm mb-4 bg-slate-50/80 p-3 rounded-lg">
+                                                <div className="col-span-2 flex items-center gap-2"><Icon name="user" className="w-3.5 h-3.5 text-indigo-500" /><span className="font-medium text-slate-700">Client:</span> <span className="text-slate-900">{workflow.assigneeName || 'N/A'}</span></div>
+                                                <div className="flex items-center gap-2"><Icon name="calendar-days" className="w-3.5 h-3.5 text-slate-400" /><span className="text-slate-500">Event:</span> <span className="text-slate-700">{workflow.dateOfEvent || '-'}</span></div>
+                                            </div>
+                                            {workflow.link && workflow.link !== '#' ? (
+                                                <a href={workflow.link} target="_blank" className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white py-2.5 rounded-lg font-medium text-sm hover:bg-indigo-700 shadow-md"><Icon name="clipboard-check" className="w-4 h-4" /> Mark Status</a>
+                                            ) : (<button disabled className="w-full bg-slate-100 text-slate-400 py-2.5 rounded-lg font-medium text-sm cursor-not-allowed flex items-center justify-center gap-2"><Icon name="link" className="w-4 h-4" /> No Link Available</button>)}
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+
+                        {/* Desktop Table */}
+                        <div className="hidden md:block bg-white/90 backdrop-blur-md rounded-xl shadow-sm border border-slate-200/60 overflow-hidden">
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm text-left" style={{ minWidth: '1000px' }}>
+                                    <thead className="bg-slate-50/80 border-b border-slate-200">
+                                        <tr>
+                                            <HeaderCell label="Order #" sortKey="orderNo" width="w-24" />
+                                            <HeaderCell label="Client Name" sortKey="assigneeName" width="w-48" />
+                                            <HeaderCell label="Step Description" sortKey="stepName" />
+                                            <HeaderCell label="Event Date" width="w-40" />
+                                            <HeaderCell label="Mark Status" width="w-40" align="right" />
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {processedWorkflows.length === 0 ? (
+                                            <tr><td colSpan="5" className="px-6 py-16 text-center"><div className="flex flex-col items-center justify-center text-slate-400"><Icon name="search" className="w-10 h-10 mb-3 text-slate-300 mx-auto" /><p className="font-medium">No workflows found</p><p className="text-xs mt-1">Try adjusting your search.</p></div></td></tr>
+                                        ) : (
+                                            processedWorkflows.map((workflow) => (
+                                                <tr key={workflow.id} className="hover:bg-indigo-50/30 transition-colors">
+                                                    <td className="px-6 py-4 font-semibold text-slate-900">#{workflow.orderNo}</td>
+                                                    <td className="px-6 py-4"><div className="flex items-center gap-3"><div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold border border-indigo-200 shadow-sm">{workflow.assigneeName ? workflow.assigneeName.substring(0,2).toUpperCase() : '?'}</div><span className="text-slate-700 font-medium">{workflow.assigneeName || 'Unknown Client'}</span></div></td>
+                                                    <td className="px-6 py-4"><div className="font-medium text-slate-800">{workflow.stepName}</div></td>
+                                                    <td className="px-6 py-4"><span className="text-sm text-slate-700 font-medium bg-white px-2.5 py-1 rounded-md border border-slate-200 shadow-sm">{workflow.dateOfEvent || '-'}</span></td>
+                                                    <td className="px-6 py-4 text-right">
+                                                        {workflow.link && workflow.link !== '#' ? (
+                                                            <a href={workflow.link} target="_blank" className="inline-flex items-center gap-2 justify-center px-4 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors text-xs font-medium shadow-sm"><Icon name="clipboard-check" className="w-4 h-4" /> Mark Status</a>
+                                                        ) : <span className="text-slate-300 text-xs">No Link</span>}
+                                                    </td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </main>
+                </BackgroundWrapper>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
